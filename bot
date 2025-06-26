@@ -1,0 +1,674 @@
+# -*- coding: utf-8 -*-
+# ==================================================================================
+# ===   BOT ME AL MUSTAFA - v20 (ARABIC KEYWORDS & COMMAND FLEXIBILITY FIX)      ===
+# ==================================================================================
+# --- القسم الأول: الاستيرادات والإعدادات الأولية ---
+
+import os
+import sys
+import asyncio
+import logging
+import traceback
+import time
+import math
+import uuid
+from datetime import datetime, timedelta
+
+# --- مكتبات معالجة الملفات ---
+import fitz
+import docx
+import pptx
+import nest_asyncio
+
+# --- مكتبات تليثون ---
+from telethon import TelegramClient, events
+from telethon.sessions import StringSession
+from telethon.tl.types import User
+from telethon.errors.rpcerrorlist import (
+    PeerIdInvalidError, MessageDeleteForbiddenError, FileReferenceExpiredError,
+    FloodWaitError, ChatWriteForbiddenError, UserIsBlockedError
+)
+
+# --- مكتبات الطباعة المتقدمة ---
+try:
+    import win32print
+    import pdf_to_printer
+    WINDOWS_PRINTING_ENABLED = True
+except ImportError as e:
+    WINDOWS_PRINTING_ENABLED = False
+    print("=" * 60)
+    print("!!! ⚠️ تحذير: إحدى مكتبات الطباعة المطلوبة غير مثبتة.")
+    print(f"!!! الخطأ: {e}")
+    print("!!! لتفعيل الطباعة، قم بتشغيل الأوامر التالية في CMD:")
+    print("pip install pywin32")
+    print("pip install pdf-to-printer")
+    print("=" * 60)
+
+# --- تفعيل nest_asyncio ---
+nest_asyncio.apply()
+
+# --- إعدادات التسجيل (Logging) ---
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('bot_activity.log', mode='a', encoding='utf-8'),
+        logging.StreamHandler(sys.stdout)
+    ]
+)
+logger = logging.getLogger('AlMustafaBot')
+
+def log_problem(error_message):
+    try:
+        log_path = "D:\\bot_problems_log.txt"
+        os.makedirs(os.path.dirname(log_path), exist_ok=True)
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(f"--- Problem at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} ---\n")
+            f.write(error_message)
+            f.write("\n\n")
+    except Exception as e:
+        logger.error(f"CRITICAL: Could not write to D:\\bot_problems_log.txt. Error: {e}")
+
+# --- متغيرات حالة البوت والبيانات المؤقتة ---
+owner_id = None
+bot_start_time = None
+is_sleeping = False
+custom_auto_reply_mode = False
+custom_auto_reply_message = "صاحب الحساب غير متوفر حاليًا. سيتم الرد عليك لاحقًا."
+SLEEP_APOLOGY_MESSAGE = "عذرًا، صاحب الحساب غير متوفر حاليًا. تم إعلامه برسالتك وسيرد عليك في أقرب وقت."
+users_interacted_while_sleeping = {}
+ignored_users = set()
+user_pending_files = {}
+pending_group_prints = {}
+user_last_interaction_time = {}
+user_wait_message = {}
+stats_confirmed_orders = 0
+stats_rejected_orders = 0
+stats_total_confirmed_files = 0
+stats_interacted_users = set()
+global_daily_total_collected = 0
+
+# --- أسعار الطباعة ---
+PRICE_PER_PAGE_LT50 = 50
+PRICE_PER_PAGE_GTE50 = 40
+COVER_BINDING_COST = 500
+
+# --- قوالب الرسائل والكلمات المفتاحية ---
+KEYWORDS_CONFIRM = ["نعم", "اي", "أجل", "موافق", "موافقة", "تمام", "اوكي", "وك", "اوك", "تم", "تثبيت"]
+KEYWORDS_CANCEL = ["لا", "كلا", "ارفض", "الغاء"]
+WELCOME_MESSAGE_TEXT = "👋 أهلاً بك {user_name} في بوت المصطفى للطباعة!\n\nأرسل لي ملفاتك وسأقوم بحساب تكلفتها لك. 🖨️"
+WELCOME_COOLDOWN = timedelta(hours=12)
+ORDER_COMPLETION_MESSAGE_USER = (
+    "🎉 عزيزي المستخدم، تم إكمال طلبك بنجاح.\n\n"
+    "يرجى استلامه أو طلب خدمة توصيل.\n\n"
+    "شكرًا لاختيارك خدماتنا! 😊"
+)
+
+# ----------------------------------------------------------------------------------
+# --- القسم الثالث: الدوال المساعدة ---
+# ----------------------------------------------------------------------------------
+
+def get_main_menu_text():
+    return ("**📋 قائمة أوامر بوت المصطفى:**\n\n"
+            "`.م1` - ⚙️ أوامر حالة البوت\n`.م2` - 💰 أوامر الأسعار\n"
+            "`.م3` - 👥 أوامر إدارة المستخدمين\n`.م4` - 📊 أوامر متقدمة\n"
+            "`.م5` - 📥 أمر حفظ الوسائط (`.حلو`)\n\n"
+            "أرسل الأمر مع الرقم للتفاصيل (مثال: `.م1`)")
+
+def get_status_commands_text():
+    return ("**⚙️ أوامر حالة البوت:**\n"
+            "`.نايم` - تفعيل وضع النوم.\n`.كاعد` - إلغاء وضع النوم والرد التلقائي.\n"
+            "`.تنايم <رسالة>` - تفعيل رد تلقائي مخصص.\n"
+            "`.تفعيل` - عرض حالة البوت ومدة التشغيل.\n`.فحص` - فحص حالة الاتصال والمكونات.\n"
+            "`.تيست` - 🧪 فحص حالة الطابعات وطباعة صفحة اختبار.\n"
+            "`.م` - ↩️ العودة للقائمة الرئيسية.")
+
+def get_prices_commands_text():
+    return (f"**💰 أوامر تعديل الأسعار:**\n"
+            f"`.ت1 <قيمة>` - سعر الصفحة (< 50) `[{PRICE_PER_PAGE_LT50}]`\n"
+            f"`.ت2 <قيمة>` - سعر الصفحة (>= 50) `[{PRICE_PER_PAGE_GTE50}]`\n"
+            f"`.ت3 <قيمة>` - تكلفة الجلاد `[{COVER_BINDING_COST}]`\n"
+            "`.م` - ↩️ العودة للقائمة الرئيسية.")
+
+def get_users_commands_text():
+    return ("**👥 أوامر إدارة المستخدمين:**\n"
+            "`.سماح` (بالرد) - تجاهل المستخدم.\n`.الغاء` (بالرد) - إلغاء تجاهل المستخدم.\n"
+            "`.الغاءك` - إلغاء تجاهل جميع المستخدمين.\n`.ك` (بالرد) - إرسال رسالة إكمال الطلب.\n"
+            "`.م` - ↩️ العودة للقائمة الرئيسية.")
+
+def get_advanced_commands_text():
+    return ("**📊 أوامر متقدمة:**\n"
+            "`.اذاعة` (بالرد) - بث رسالة للمستخدمين.\n"
+            "`.سجل` - عرض تقرير إحصائيات وإعادة تعيينه.\n"
+            "`.م` - ↩️ العودة للقائمة الرئيسية.")
+
+def get_save_command_text():
+    return ("**📥 أمر حفظ الوسائط (`.حلو`):**\n"
+            "استخدم الأمر `.حلو` بالرد على أي وسائط لحفظها في رسائلك المحفوظة كملف.\n"
+            "`.م` - ↩️ العودة للقائمة الرئيسية.")
+
+def calculate_price(pages_count):
+    if pages_count == 0: return 0, 0
+    price_per_page = PRICE_PER_PAGE_LT50 if pages_count < 50 else PRICE_PER_PAGE_GTE50
+    base_p = pages_count * price_per_page
+    return int(math.ceil(base_p / 250.0) * 250), int(math.ceil((base_p + COVER_BINDING_COST) / 250.0) * 250)
+
+async def count_pages_for_document(file_path):
+    def blocking_io_call(path):
+        try:
+            ext = os.path.splitext(path)[1].lower()
+            if ext == '.pdf':
+                with fitz.open(path) as doc: return len(doc)
+            elif ext == '.docx':
+                doc = docx.Document(path)
+                return getattr(doc.core_properties, 'pages', len(doc.sections)) or len(doc.sections)
+            elif ext == '.pptx':
+                return len(pptx.Presentation(path).slides)
+            return 0
+        except Exception as e:
+            logger.error(f"I/O Error counting pages for {path}: {e}")
+            return 0
+    return await asyncio.to_thread(blocking_io_call, file_path)
+
+async def send_to_printer(file_to_print_path, printer_name):
+    if not WINDOWS_PRINTING_ENABLED: return False, "الطباعة معطلة لأن مكتبة pywin32 غير مثبتة."
+    
+    try:
+        import pdf_to_printer
+    except ImportError:
+        return False, "الطباعة معطلة لأن مكتبة pdf-to-printer غير مثبتة."
+
+    def blocking_print_call(pdf_path, p_name):
+        try:
+            pdf_to_printer.print_file(filename=pdf_path, printer=p_name, win32_print=True)
+            return True, f"تم إرسال أمر الطباعة بنجاح إلى '{p_name}'."
+        except Exception as e:
+            logger.error(f"Printing failed using pdf-to-printer: {e}", exc_info=True)
+            log_problem(f"Printing failed for {pdf_path} on {p_name}\n{traceback.format_exc()}")
+            return False, f"فشل الطباعة: {e}"
+    return await asyncio.to_thread(blocking_print_call, file_to_print_path, printer_name)
+
+async def find_or_download_file(status_msg, file_msg):
+    file_name = next((a.file_name for a in file_msg.document.attributes if hasattr(a, 'file_name')), None)
+    if not file_name: raise ValueError("لا يمكن العثور على اسم الملف.")
+
+    await status_msg.edit(f"🔎 البحث عن `{file_name}`...")
+    potential_path = os.path.join(TELEGRAM_DESKTOP_PATH, file_name)
+    if os.path.exists(potential_path):
+        logger.info(f"File found in Telegram Desktop: {potential_path}")
+        await status_msg.edit(f"✅ تم العثور على الملف.")
+        return potential_path
+
+    await status_msg.edit(f"📥 لم يتم العثور على الملف، جارٍ التحميل...")
+    download_path = os.path.join(BOT_DOWNLOAD_PATH, f"print_{file_msg.sender_id}_{uuid.uuid4()}_{file_name}")
+    await file_msg.download_media(file=download_path)
+    logger.info(f"File downloaded to: {download_path}")
+    await status_msg.edit(f"✅ تم تحميل الملف.")
+    return download_path
+
+async def send_group_notification(message, **kwargs):
+    try: await client.send_message(PRINTING_GROUP_ID, message, **kwargs)
+    except Exception as e: logger.error(f"Failed to send group notification: {e}")
+
+def create_progress_bar(percentage):
+    percentage = max(0, min(100, percentage))
+    filled_length = int(percentage / 10)
+    bar = '█' * filled_length + '░' * (10 - filled_length)
+    return f"[{bar}] {percentage:.1f}%"
+
+# ----------------------------------------------------------------------------------
+# --- القسم الرابع: معالجات أوامر المالك ---
+# ----------------------------------------------------------------------------------
+
+# (تم التعديل هنا) تم جعل نمط الأمر أكثر مرونة
+@client.on(events.NewMessage(pattern=r'^\.م(\d*)', outgoing=True))
+async def command_menu(event):
+    if event.sender_id != owner_id: return
+    # تم تعديل السطر التالي ليتناسب مع النمط الجديد
+    match = event.pattern_match
+    menu_num = match.group(1) if match else ""
+    
+    text = ""
+    if not menu_num: text = get_main_menu_text()
+    elif menu_num == "1": text = get_status_commands_text()
+    elif menu_num == "2": text = get_prices_commands_text()
+    elif menu_num == "3": text = get_users_commands_text()
+    elif menu_num == "4": text = get_advanced_commands_text()
+    elif menu_num == "5": text = get_save_command_text()
+    else: text = "⚠️ رقم القائمة غير صالح. أرسل `.م` فقط."
+    
+    await event.edit(text, parse_mode='md')
+
+@client.on(events.NewMessage(pattern=r'^\.نايم$', outgoing=True))
+async def go_sleep(event):
+    if event.sender_id != owner_id: return
+    global is_sleeping, custom_auto_reply_mode
+    is_sleeping = True; custom_auto_reply_mode = False; logger.info("Bot state: Sleeping.")
+    await event.edit("🌙 تم تفعيل وضع النوم.")
+
+@client.on(events.NewMessage(pattern=r'^\.كاعد$', outgoing=True))
+async def wake_up(event):
+    if event.sender_id != owner_id: return
+    global is_sleeping, custom_auto_reply_mode, users_interacted_while_sleeping
+    is_sleeping = False; custom_auto_reply_mode = False; logger.info("Bot state: Awake.")
+    reply_msg = "☀️ تم تفعيل وضع الاستعداد."
+    if users_interacted_while_sleeping:
+        reply_msg += "\n\n🔔 المستخدمون الذين راسلوك أثناء نومك:\n"
+        for uid, data in users_interacted_while_sleeping.items():
+            user_info = f"- {data['name']}"
+            if data.get('username'): user_info += f" (@{data['username']})"
+            reply_msg += user_info + "\n"
+        users_interacted_while_sleeping.clear()
+    await event.edit(reply_msg)
+
+@client.on(events.NewMessage(pattern=r'^\.تنايم(?:\s+(.*))?$', outgoing=True))
+async def set_auto_reply(event):
+    if event.sender_id != owner_id: return
+    global custom_auto_reply_mode, custom_auto_reply_message, is_sleeping
+    message = event.pattern_match.group(1)
+    if message and message.strip():
+        custom_auto_reply_message = message.strip(); custom_auto_reply_mode = True; is_sleeping = False
+        logger.info(f"Auto-reply enabled: '{custom_auto_reply_message}'")
+        await event.edit(f"🤖 تم تفعيل الرد التلقائي. الرسالة:\n`{custom_auto_reply_message}`")
+    else: await event.edit("⚠️ خطأ: يرجى كتابة رسالة بعد الأمر.")
+
+@client.on(events.NewMessage(pattern=r'^\.تفعيل$', outgoing=True))
+async def bot_status(event):
+    if event.sender_id != owner_id: return
+    if not bot_start_time: return await event.edit("البوت لم يبدأ بشكل كامل بعد.")
+    uptime = datetime.now() - bot_start_time
+    d, r = divmod(uptime.total_seconds(), 86400); h, r = divmod(r, 3600); m, s = divmod(r, 60)
+    uptime_str = f"{int(d)}ي {int(h)}س {int(m)}د"
+    status = "🌙 نائم" if is_sleeping else "🤖 رد تلقائي" if custom_auto_reply_mode else "☀️ كاعد"
+    await event.edit(f"**📊 حالة البوت:**\n- الحالة: **{status}**\n- مدة التشغيل: **{uptime_str}**\n- مستخدمون متجاهلون: **{len(ignored_users)}**")
+
+@client.on(events.NewMessage(pattern=r'^\.فحص$', outgoing=True))
+async def bot_check(event):
+    if event.sender_id != owner_id: return
+    report = "**🩺 فحص حالة البوت:**\n"
+    report += f"- اتصال تليثون: `{'✅ سليم' if client.is_connected() else '❌ مقطوع'}`\n"
+    report += f"- مسار البحث: `{'✅ موجود' if os.path.exists(TELEGRAM_DESKTOP_PATH) else '❌ غير موجود'}`\n"
+    report += f"- مسار التحميل: `{'✅ موجود' if os.path.exists(BOT_DOWNLOAD_PATH) else '❌ غير موجود'}`\n"
+    
+    if WINDOWS_PRINTING_ENABLED:
+        printers_to_test = [p for p in [PRINTER_NAME_1, PRINTER_NAME_2] if p]
+        if printers_to_test:
+            report += "- حالة الطابعات:\n"
+            for printer_name in printers_to_test:
+                try:
+                    h_printer = win32print.OpenPrinter(printer_name)
+                    info = win32print.GetPrinter(h_printer, 2)
+                    win32print.ClosePrinter(h_printer)
+                    status_map = {0: "جاهزة", 1: "متوقفة مؤقتًا", 4: "جارٍ الطباعة"}
+                    status_text = status_map.get(info['Status'], f"غير معروف ({info['Status']})")
+                    report += f"  - `{printer_name}`: **{status_text}**\n"
+                except Exception:
+                    report += f"  - `{printer_name}`: **❌ خطأ في الوصول**\n"
+        else:
+            report += "- الطابعات: `لم يتم تحديد أسماء طابعات`\n"
+    else:
+        report += "- الطابعات: `مكتبات الطباعة غير مثبتة`\n"
+        
+    await event.edit(report, parse_mode='md')
+
+@client.on(events.NewMessage(pattern=r'^\.ت([1-3])\s+(\d+)$', outgoing=True))
+async def adjust_price(event):
+    if event.sender_id != owner_id: return
+    ptype, pval = int(event.pattern_match.group(1)), int(event.pattern_match.group(2))
+    global PRICE_PER_PAGE_LT50, PRICE_PER_PAGE_GTE50, COVER_BINDING_COST
+    name = ""
+    if ptype == 1: PRICE_PER_PAGE_LT50 = pval; name = "سعر الصفحة (< 50)"
+    elif ptype == 2: PRICE_PER_PAGE_GTE50 = pval; name = "سعر الصفحة (>= 50)"
+    elif ptype == 3: COVER_BINDING_COST = pval; name = "تكلفة الجلاد"
+    if name: await event.edit(f"✅ تم تحديث **{name}** إلى `{pval}` دينار.")
+
+@client.on(events.NewMessage(pattern=r'^\.سماح$', outgoing=True, func=lambda e: e.is_reply))
+async def ignore_user(event):
+    if event.sender_id != owner_id: return
+    user_id = (await event.get_reply_message()).sender_id; ignored_users.add(user_id)
+    await event.edit(f"🚫 تم تجاهل المستخدم `{user_id}`.")
+
+@client.on(events.NewMessage(pattern=r'^\.الغاء$', outgoing=True, func=lambda e: e.is_reply))
+async def unignore_user(event):
+    if event.sender_id != owner_id: return
+    user_id = (await event.get_reply_message()).sender_id; ignored_users.discard(user_id)
+    await event.edit(f"✅ تم إلغاء تجاهل `{user_id}`.")
+
+@client.on(events.NewMessage(pattern=r'^\.الغاءك$', outgoing=True))
+async def unignore_all(event):
+    if event.sender_id != owner_id: return
+    count = len(ignored_users); ignored_users.clear()
+    await event.edit(f"✅ تم إلغاء تجاهل جميع المستخدمين ({count}).")
+
+@client.on(events.NewMessage(pattern=r'^\.ك$', outgoing=True, func=lambda e: e.is_reply))
+async def send_completion_msg(event):
+    if event.sender_id != owner_id: return
+    try:
+        await client.send_message((await event.get_reply_message()).sender_id, ORDER_COMPLETION_MESSAGE_USER)
+        await event.delete()
+    except Exception as e: await event.edit(f"❌ فشل: {e}")
+
+@client.on(events.NewMessage(pattern=r'^\.اذاعة$', outgoing=True, func=lambda e: e.is_reply))
+async def broadcast(event):
+    if event.sender_id != owner_id: return
+    reply_msg = await event.get_reply_message()
+    all_users = list(user_last_interaction_time.keys())
+    if not all_users: return await event.edit("ℹ️ لا يوجد مستخدمون متفاعلون للبث إليهم.")
+    await event.edit(f"⏳ جارٍ بث الرسالة إلى {len(all_users)} مستخدم...")
+    success, fail = 0, 0
+    for uid in all_users:
+        try: await client.forward_messages(uid, reply_msg); success += 1; await asyncio.sleep(0.2)
+        except Exception: fail += 1
+    await event.edit(f"✅ **اكتمل البث:**\n- نجح: {success}\n- فشل: {fail}")
+
+@client.on(events.NewMessage(pattern=r'^\.سجل$', outgoing=True))
+async def report_stats(event):
+    if event.sender_id != owner_id: return
+    global stats_confirmed_orders, stats_rejected_orders, stats_total_confirmed_files, stats_interacted_users, global_daily_total_collected
+    report = (f"**📊 تقرير السجل (منذ آخر طلب)**\n\n"
+              f"👥 متفاعلون: **{len(stats_interacted_users)}**\n"
+              f"👍 طلبات موافق عليها: **{stats_confirmed_orders}**\n"
+              f"👎 طلبات مرفوضة: **{stats_rejected_orders}**\n"
+              f"📂 ملفات مؤكدة: **{stats_total_confirmed_files}**\n"
+              f"💰 المجموع المحصّل: **{global_daily_total_collected}** د.ع\n\n"
+              f"_(تمت إعادة تعيين السجل لهذه الفترة)_")
+    await event.edit(report, parse_mode='md')
+    stats_confirmed_orders = 0
+    stats_rejected_orders = 0
+    stats_total_confirmed_files = 0
+    global_daily_total_collected = 0
+    stats_interacted_users.clear()
+
+@client.on(events.NewMessage(pattern=r'^\.حلو$', outgoing=True, func=lambda e: e.is_reply))
+async def save_media(event):
+    if event.sender_id != owner_id: return
+    reply_msg = await event.get_reply_message()
+    if not reply_msg or not reply_msg.media: return await event.edit("⚠️ يجب الرد على وسائط.")
+    status_msg = await event.edit("📥 جارٍ الحفظ...")
+    try:
+        sender = await reply_msg.get_sender()
+        sender_name = f"{sender.first_name or ''} {sender.last_name or ''}".strip()
+        caption = f"💾 من: {sender_name} (`{sender.id}`)\nمن محادثة: `{reply_msg.chat_id}`"
+        temp_dir = os.path.join(BOT_DOWNLOAD_PATH, "temp_saves")
+        os.makedirs(temp_dir, exist_ok=True)
+        path = await reply_msg.download_media(file=temp_dir)
+        await client.send_file('me', path, caption=caption, force_document=True, parse_mode='md')
+        os.remove(path)
+        await status_msg.edit("✅ تم الحفظ بنجاح في رسائلك المحفوظة.")
+    except Exception as e: await status_msg.edit(f"❌ فشل الحفظ: {e}")
+
+@client.on(events.NewMessage(pattern=r'^\.تيست$', outgoing=True))
+async def test_printer(event):
+    if event.sender_id != owner_id: return
+    if not WINDOWS_PRINTING_ENABLED:
+        return await event.edit("⚠️ لا يمكن إجراء الاختبار. مكتبة `pywin32` غير مثبتة.")
+
+    await event.edit("🧪 **بدء اختبار الطابعات...**")
+    report = "**📝 تقرير حالة الطابعات:**\n\n"
+    printers_to_test = [p for p in [PRINTER_NAME_1, PRINTER_NAME_2] if p]
+    if not printers_to_test:
+        return await event.edit("❌ لم يتم تحديد أسماء طابعات في الإعدادات.")
+
+    found_printer = False
+    for printer_name in printers_to_test:
+        try:
+            h_printer = win32print.OpenPrinter(printer_name)
+            info = win32print.GetPrinter(h_printer, 2)
+            win32print.ClosePrinter(h_printer)
+            status_map = {0: "جاهزة (Idle)", 1: "متوقفة مؤقتًا", 4: "جارٍ الطباعة"}
+            status_text = status_map.get(info['Status'], f"غير معروف (كود: {info['Status']})")
+            report += f"**طابعة: `{printer_name}`**\n"
+            report += f"- الحالة: **{status_text}**\n"
+            report += f"- مهام في الانتظار: **{info['cJobs']}**\n\n"
+            found_printer = True
+        except Exception as e:
+            report += f"**طابعة: `{printer_name}`**\n- الحالة: **❌ خطأ في الوصول إليها**\n- السبب: `{e}`\n\n"
+
+    status_msg = await event.edit(report)
+
+    if found_printer:
+        try:
+            import pdf_to_printer
+            test_printer_name = printers_to_test[0]
+            await status_msg.reply(f"🖨️ جارٍ إرسال صفحة اختبار إلى `{test_printer_name}`...")
+            pdf_to_printer.print_windows_test_page(printer_name=test_printer_name)
+            await status_msg.reply(f"✅ تم إرسال صفحة الاختبار بنجاح.")
+        except ImportError:
+            await status_msg.reply("❌ لا يمكن طباعة صفحة الاختبار. مكتبة `pdf-to-printer` غير مثبتة.")
+        except Exception as e:
+            await status_msg.reply(f"❌ فشلت طباعة صفحة الاختبار: `{e}`")
+
+@client.on(events.NewMessage(pattern=r'^\.طباعة$'))
+async def universal_print_command(event):
+    is_owner = event.sender_id == owner_id
+    is_group = event.chat_id == PRINTING_GROUP_ID
+
+    if not event.is_reply:
+        if is_owner: await event.reply("📎 يجب الرد على رسالة تحتوي على ملف للطباعة.")
+        return
+
+    reply_msg = await event.get_reply_message()
+    if not reply_msg.document:
+        if is_owner: await event.reply("🚫 الملف الذي تم الرد عليه ليس مستندًا صالحًا.")
+        return
+
+    # منطق المشغل في المجموعة (بما فيهم المالك)
+    if is_group:
+        job_data = pending_group_prints.pop(reply_msg.id, None)
+        if not job_data:
+            return await event.reply("❌ لم أجد معلومات هذا الطلب. قد يكون تمت طباعته.")
+        
+        chosen_printer = None
+        if is_owner:
+            printers = [p for p in [PRINTER_NAME_1, PRINTER_NAME_2] if p]
+            if len(printers) > 1:
+                options = "".join([f"\n`{i}` - {printer}" for i, printer in enumerate(printers, 1)])
+                try:
+                    prompt_msg = await event.reply(f"**🖨️ اختر الطابعة:**{options}\n\nلديك 15 ثانية للاختيار.")
+                    async with client.conversation(event.chat_id, timeout=15) as conv:
+                        response = await conv.get_response(from_users=owner_id)
+                        choice = int(response.text.strip())
+                        if 1 <= choice <= len(printers):
+                            chosen_printer = printers[choice - 1]
+                            await prompt_msg.edit(f"✅ تم اختيار الطابعة: `{chosen_printer}`.")
+                        else:
+                            await prompt_msg.edit("❌ اختيار خاطئ. سيتم استخدام الطابعة الافتراضية.")
+                except (asyncio.TimeoutError, ValueError, IndexError):
+                    await prompt_msg.edit("⏳ انتهى الوقت أو اختيار خاطئ. سيتم استخدام الطابعة الافتراضية.")
+
+        status_msg = await event.reply(f"✅ تم استلام أمر الطباعة. جارٍ التحضير...")
+        asyncio.create_task(execute_print_job(status_msg, job_data['file_msg'], job_data['user_id'], chosen_printer))
+        return
+
+    # منطق المالك في المحادثات الخاصة
+    if is_owner and event.is_private:
+        status_msg = await event.reply("🖨️ أمر طباعة مباشر. جارٍ التحضير...")
+        original_sender_id = reply_msg.sender_id
+        asyncio.create_task(execute_print_job(status_msg, reply_msg, original_sender_id))
+        return
+
+# ----------------------------------------------------------------------------------
+# --- القسم الخامس: معالج رسائل المستخدمين ---
+# ----------------------------------------------------------------------------------
+@client.on(events.NewMessage(incoming=True, func=lambda e: e.is_private and not e.out))
+async def handle_user_message(event):
+    user_id = event.sender_id
+    text = event.raw_text.strip().lower()
+    user_entity = await event.get_sender()
+
+    if not user_entity or user_entity.bot or user_id in ignored_users: return
+    
+    user_name = user_entity.first_name or f"User {user_id}"
+    stats_interacted_users.add(user_id)
+
+    if event.media and hasattr(event.media, 'ttl_seconds') and event.media.ttl_seconds:
+        try:
+            temp_dir_ttl = os.path.join(BOT_DOWNLOAD_PATH, "temp_saves")
+            os.makedirs(temp_dir_ttl, exist_ok=True)
+            path = await event.download_media(file=temp_dir_ttl)
+            await client.send_file('me', path, caption=f"🖼️ صورة ذاتية التدمير من: {user_name} (`{user_id}`)")
+            os.remove(path)
+        except Exception as e:
+            logger.error(f"Failed to save self-destructing media: {e}")
+            log_problem(f"Failed to save self-destructing media from {user_id}\n{traceback.format_exc()}")
+        return
+
+    if is_sleeping:
+        if user_id not in users_interacted_while_sleeping:
+            users_interacted_while_sleeping[user_id] = {'name': user_name, 'username': user_entity.username}
+            await event.reply(SLEEP_APOLOGY_MESSAGE)
+            await send_group_notification(f"🔔 رسالة جديدة من [{user_name}](tg://user?id={user_id}) أثناء النوم.", parse_mode='md')
+        return
+
+    if event.document:
+        if user_id in user_wait_message:
+            try: await user_wait_message.pop(user_id).delete()
+            except Exception: pass
+            
+        status_msg = await event.reply("⏳ استلمت الملف، جارٍ المعالجة...")
+        temp_path = None
+        try:
+            file_name = next((a.file_name for a in event.document.attributes if hasattr(a, 'file_name')), "file.tmp")
+            temp_path = os.path.join(BOT_DOWNLOAD_PATH, f"temp_{user_id}_{uuid.uuid4()}_{file_name}")
+            await event.download_media(file=temp_path)
+            pages = await count_pages_for_document(temp_path)
+            
+            if pages > 0:
+                base, cover = calculate_price(pages)
+                if user_id not in user_pending_files: user_pending_files[user_id] = {}
+                user_pending_files[user_id][event.id] = {'msg': event.message, 'price': base, 'pages': pages}
+                price_msg = (f"📄 **الملف:** `{file_name}`\n"
+                             f"📖 **الصفحات:** {pages}\n"
+                             f"💰 **التكلفة:** {base} د.ع (بدون تجليد) | {cover} د.ع (مع تجليد)\n\n"
+                             f"✅ تم إضافة الملف لطلبك. أرسل `نعم` أو `تثبيت` لإرسال كل الملفات للمكتبة.")
+                await status_msg.edit(price_msg)
+            else: await status_msg.edit("❌ لم أتمكن من حساب الصفحات.")
+            
+            if os.path.exists(temp_path): os.remove(temp_path)
+        except Exception as e:
+            logger.error(f"File processing error: {e}", exc_info=True)
+            log_problem(f"File processing error for user {user_id}\n{traceback.format_exc()}")
+            await status_msg.edit(f"❌ خطأ: {e}")
+            if temp_path and os.path.exists(temp_path): os.remove(temp_path)
+        return
+
+    # (تم التعديل هنا) تم جعل شرط التحقق من الكلمات المفتاحية أكثر مرونة
+    if any(keyword in text for keyword in KEYWORDS_CONFIRM) and user_id in user_pending_files:
+        if user_id in user_wait_message:
+            try: await user_wait_message.pop(user_id).delete()
+            except Exception: pass
+            
+        pending_job = user_pending_files.pop(user_id)
+        if not pending_job: return
+
+        await event.reply("✅ تم استلام تأكيدك. جارٍ إرسال طلبك إلى المكتبة...")
+        total_price = sum(item['price'] for item in pending_job.values())
+        total_pages = sum(item['pages'] for item in pending_job.values())
+        user_link = f"[{user_name}](tg://user?id={user_id})"
+        
+        summary_report = (f"**📠 طلب طباعة جديد مؤكد**\n\n"
+                          f"👤 **العميل:** {user_link}\n"
+                          f"📖 **إجمالي الصفحات:** {total_pages}\n"
+                          f"💰 **التكلفة الإجمالية:** {total_price} د.ع\n\n"
+                          f"**للطباعة، قم بالرد على أي من الملفات التالية بأمر `.طباعة`**")
+        await send_group_notification(summary_report, parse_mode='md')
+        
+        for msg_id, item in pending_job.items():
+            file_msg = item['msg']
+            file_name = next((a.file_name for a in file_msg.document.attributes if hasattr(a, 'file_name')), "file.tmp")
+            group_msg = await client.send_file(PRINTING_GROUP_ID, file_msg.media, caption=f"📄 **ملف للطباعة:** `{file_name}`", parse_mode='md')
+            pending_group_prints[group_msg.id] = {'user_id': user_id, 'file_msg': file_msg}
+            await asyncio.sleep(1)
+        return
+
+    if event.raw_text:
+        if user_id in user_wait_message:
+            try: await user_wait_message.pop(user_id).delete()
+            except Exception: pass
+        
+        last_welcome = user_last_interaction_time.get(user_id)
+        if not last_welcome or (datetime.now() - last_welcome > WELCOME_COOLDOWN):
+            await event.reply(WELCOME_MESSAGE_TEXT.format(user_name=user_name), parse_mode='md')
+            user_last_interaction_time[user_id] = datetime.now()
+        else:
+            user_wait_message[user_id] = await event.reply("⏳ شكرًا لرسالتك. سيتم الرد عليك بأقرب وقت ممكن.")
+
+# ----------------------------------------------------------------------------------
+# --- القسم السادس: دالة الطباعة التنفيذية ---
+# ----------------------------------------------------------------------------------
+async def execute_print_job(status_msg, file_msg_to_print, user_id_to_notify, printer_name=None):
+    file_name_original = next((a.file_name for a in file_msg_to_print.document.attributes if hasattr(a, 'file_name')), "file.tmp")
+    local_file_path = None
+    try:
+        local_file_path = await find_or_download_file(status_msg, file_msg_to_print)
+        
+        printer_to_use = printer_name or PRINTER_NAME_1 or PRINTER_NAME_2
+        if not printer_to_use: raise Exception("لم يتم تحديد أي طابعة.")
+        
+        await status_msg.edit(f"🖨️ جارٍ إرسال `{file_name_original}` إلى `{printer_to_use}`...")
+        
+        for i in range(0, 101, 20):
+             await status_msg.edit(f"🖨️ جارٍ الطباعة: `{file_name_original}`\n{create_progress_bar(i)}")
+             await asyncio.sleep(1)
+
+        success, message = await send_to_printer(local_file_path, printer_to_use)
+        if not success: raise Exception(f"{message}")
+        
+        await status_msg.edit(f"✅ تمت طباعة `{file_name_original}` بنجاح.")
+        
+        await client.send_message(user_id_to_notify, f"✅ تمت طباعة ملفك `{file_name_original}` بنجاح.")
+        await client.send_message(user_id_to_notify, ORDER_COMPLETION_MESSAGE_USER)
+        
+    except Exception as e:
+        logger.error(f"Print execution error: {e}", exc_info=True)
+        log_problem(f"Print execution error for user {user_id_to_notify}\n{traceback.format_exc()}")
+        await status_msg.edit(f"❌ خطأ فادح أثناء الطباعة: {e}")
+    finally:
+        if local_file_path and BOT_DOWNLOAD_PATH in local_file_path and os.path.exists(local_file_path):
+            try: os.remove(local_file_path); logger.info(f"Cleaned up downloaded file: {local_file_path}")
+            except Exception as e_clean: logger.error(f"Cleanup failed for {local_file_path}: {e_clean}")
+
+# ----------------------------------------------------------------------------------
+# --- القسم السابع: دالة التشغيل الرئيسية ---
+# ----------------------------------------------------------------------------------
+async def main():
+    global owner_id, bot_start_time
+    if not all([API_ID, API_HASH, SESSION_STRING, PRINTING_GROUP_ID]):
+        return logger.critical("❌ خطأ فادح: متغيرات الإعداد ناقصة.")
+
+    os.makedirs(os.path.join(BOT_DOWNLOAD_PATH, "temp_saves"), exist_ok=True)
+    os.makedirs(TELEGRAM_DESKTOP_PATH, exist_ok=True)
+    logger.info(f"📁 مسار التحميل: {BOT_DOWNLOAD_PATH}")
+    logger.info(f"🔎 مسار البحث: {TELEGRAM_DESKTOP_PATH}")
+
+    logger.info("⏳ بدء تشغيل البوت...")
+    try:
+        await client.start()
+        me = await client.get_me()
+        owner_id = me.id
+        bot_start_time = datetime.now()
+        logger.info(f"✅ تم التشغيل كـ '{me.first_name}' (ID: {owner_id}). أنت المالك.")
+        await send_group_notification(f"🚀 **البوت يعمل الآن** | {me.first_name}")
+        
+        logger.info("👂 البوت الآن في وضع الاستماع...")
+        await client.run_until_disconnected()
+    except Exception as e:
+        logger.critical(f"💥 خطأ فادح في الدالة الرئيسية: {e}", exc_info=True)
+        log_problem(f"CRITICAL ERROR IN MAIN FUNCTION\n{traceback.format_exc()}")
+    finally:
+        logger.info("--- بدء إيقاف التشغيل ---")
+        if client.is_connected():
+            await send_group_notification("⛔ البوت يتوقف عن العمل الآن.")
+            await client.disconnect()
+        logger.info("✅ اكتملت عملية إيقاف التشغيل.")
+
+if __name__ == '__main__':
+    loop = asyncio.get_event_loop()
+    try:
+        loop.run_until_complete(main())
+    except KeyboardInterrupt:
+        logger.info("🛑 تم طلب الإيقاف من قبل المستخدم (Ctrl+C).")
+    finally:
+        tasks = [t for t in asyncio.all_tasks(loop=loop) if not t.done()]
+        loop.run_until_complete(asyncio.gather(*tasks, return_exceptions=True))
+        loop.close()
