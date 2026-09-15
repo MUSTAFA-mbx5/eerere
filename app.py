@@ -66,8 +66,8 @@ def change_name():
 
 @app.route('/api/get_messages', methods=['POST'])
 def get_messages():
-    data.get = request.json
-    session = request.json.get('session')
+    data = request.json  # تم التصحيح هنا
+    session = data.get('session')  # تم التصحيح هنا
     
     async def run():
         messages_list = []
