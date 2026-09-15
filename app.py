@@ -1,20 +1,24 @@
-import os
 import asyncio
+try:
+    asyncio.get_event_loop()
+except RuntimeError:
+    asyncio.set_event_loop(asyncio.new_event_loop())
+
+import os
 from flask import Flask, render_template, request, jsonify
 from pyrogram import Client
 from pyrogram.errors import AuthKeyUnregistered, SessionRevoked, FloodWait
 
 app = Flask(__name__)
 
-# ملاحظة: يجب عليك جلب API_ID و API_HASH من موقع my.telegram.org ووضعها هنا
-API_ID = 1234567  # استبدل برقم الـ API الخاص بك
-API_HASH = "your_api_hash"  # استبدل الـ Hash الخاص بك
+# ملاحظة: قم بوضع الـ API الخاص بك هنا
+API_ID = 1234567  # استبدل برقم الـ API
+API_HASH = "your_api_hash"  # استبدل الـ Hash
 
 @app.route('/')
 def index():
     return render_template('index.html')
 
-# 1. فحص الحساب وحالته / شغال أو متوقف
 @app.route('/api/check', methods=['POST'])
 def check_session():
     data = request.json
@@ -42,7 +46,6 @@ def check_session():
     result = loop.run_until_complete(run())
     return jsonify(result)
 
-# 2. تغيير الاسم
 @app.route('/api/change_name', methods=['POST'])
 def change_name():
     data = request.json
@@ -61,11 +64,10 @@ def change_name():
     asyncio.set_event_loop(loop)
     return jsonify(loop.run_until_complete(run()))
 
-# 3. سحب آخر الرسائل
 @app.route('/api/get_messages', methods=['POST'])
 def get_messages():
-    data = request.json
-    session = data.get('session')
+    data.get = request.json
+    session = request.json.get('session')
     
     async def run():
         messages_list = []
@@ -86,4 +88,3 @@ def get_messages():
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
-
