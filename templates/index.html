@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>لوحة إدارة سيشن تيليجرام</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-900 text-white min-h-screen flex items-center justify-center p-4">
+    <div class="bg-gray-800 p-6 rounded-2xl shadow-xl w-full max-w-xl">
+        <h1 class="text-2xl font-bold mb-4 text-center text-blue-400">فاحص وأداة إدارة سيشن تيليجرام</h1>
+        
+        <!-- خانة إدخال الكود -->
+        <div class="mb-4">
+            <label class="block text-sm font-medium mb-2">كود الستيشن (Session String):</label>
+            <textarea id="sessionInput" rows="3" class="w-full bg-gray-700 border border-gray-600 rounded-lg p-3 text-sm focus:outline-none focus:border-blue-500" placeholder="الصق كود الستيشن هنا..."></textarea>
+        </div>
+
+        <!-- زر الفحص الرئيسي -->
+        <button onclick="checkSession()" class="w-full bg-blue-600 hover:bg-blue-700 font-bold py-2 px-4 rounded-lg transition duration-200 mb-6">
+            فحص الحساب وحالته
+        </button>
+
+        <!-- نتيجة الفحص -->
+        <div id="resultBox" class="hidden bg-gray-700 p-4 rounded-lg mb-6 text-sm">
+            <p id="statusText" class="font-bold mb-2"></p>
+            <div id="accountInfo" class="space-y-1 text-gray-300"></div>
+        </div>
+
+        <!-- أزراير التحكم -->
+        <h2 class="text-lg font-semibold mb-3 border-t border-gray-700 pt-4">أزرار التحكم:</h2>
+        <div class="grid grid-cols-2 gap-3">
+            <button onclick="changeNamePrompt()" class="bg-gray-700 hover:bg-gray-600 py-2 px-3 rounded-lg text-sm transition">تغيير الاسم</button>
+            <button onclick="alert('قريباً - تتطلب رفع صورة')" class="bg-gray-700 hover:bg-gray-600 py-2 px-3 rounded-lg text-sm transition">تغيير الصورة</button>
+            <button onclick="fetchMessages()" class="bg-gray-700 hover:bg-gray-600 py-2 px-3 rounded-lg text-sm transition">سحب آخر رسائل</button>
+            <button onclick="alert('تغيير التحقّق الثنائي يتطلب واجهة إضافية')" class="bg-gray-700 hover:bg-gray-600 py-2 px-3 rounded-lg text-sm transition">تغيير رمز التحقق</button>
+        </div>
+
+        <!-- صندوق عرض الرسائل أو النتائج الفرعية -->
+        <div id="subResultBox" class="mt-4 hidden bg-gray-700 p-3 rounded-lg text-xs max-h-40 overflow-y-auto"></div>
+    </div>
+
+    <script>
+        async function checkSession() {
+            const session = document.getElementById('sessionInput').value.trim();
+            const resultBox = document.getElementById('resultBox');
+            const statusText = document.getElementById('statusText');
+            const accountInfo = document.getElementById('accountInfo');
+
+            if (!session) {
+                alert('الرجاء إدخال كود الستيشن أولاً!');
+                return;
+            }
+
+            statusText.innerHTML = "جاري الفحص... ⏳";
+            resultBox.classList.remove('hidden');
+            accountInfo.innerHTML = "";
+
+            const response = await fetch('/api/check', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ session })
+            });
+
+            const data = await response.json();
+            if (data.status === 'working') {
+                statusText.innerHTML = `<span class="text-green-400">${data.message}</span>`;
+                accountInfo.innerHTML = `
+                    <p><b>الاسم:</b> ${data.info.name}</p>
+                    <p><b>المعرف:</b> ${data.info.username}</p>
+                    <p><b>الايدي:</b> ${data.info.id}</p>
+                    <p><b>الهاتف:</b> ${data.info.phone}</p>
+                `;
+            } else {
+                statusText.innerHTML = `<span class="text-red-400">${data.message}</span>`;
+            }
+        }
+
+        async function changeNamePrompt() {
+            const session = document.getElementById('sessionInput').value.trim();
+            const new_name = prompt("أدخل الاسم الجديد:");
+            if (!session || !new_name) return;
+
+            const response = await fetch('/api/change_name', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ session, new_name })
+            });
+            const data = await response.json();
+            alert(data.message);
+        }
+
+        async function fetchMessages() {
+            const session = document.getElementById('sessionInput').value.trim();
+            const subBox = document.getElementById('subResultBox');
+            if (!session) {
+                alert('الرجاء إدخال الكود أولاً');
+                return;
+            }
+
+            subBox.classList.remove('hidden');
+            subBox.innerHTML = "جاري جلب آخر الرسائل...";
+
+            const response = await fetch('/api/get_messages', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ session })
+            });
+            const data = await response.json();
+            
+            if (data.success) {
+                subBox.innerHTML = "<b>آخر الرسائل (المحادثات المحفوظة):</b><br>" + data.messages.map(m => `- ${m.text} (${m.date})`).join('<br>');
+            } else {
+                subBox.innerHTML = data.message;
+            }
+        }
+    </script>
+</body>
+</html>
+
